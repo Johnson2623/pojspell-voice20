@@ -5061,36 +5061,83 @@ window.addEventListener('keydown', e => {
   }
 });
 
-function showStartupError(error) {
-  console.error('白話字閃卡程式錯誤：', error);
-  const banner = document.createElement('div');
-  banner.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;background:#fff1f0;color:#9b1c1c;padding:14px;font:15px sans-serif;white-space:pre-wrap;box-shadow:0 2px 8px #999';
-  banner.textContent = '網站執行時發生錯誤：' + (error && error.message ? error.message : String(error));
-  document.body.prepend(banner);
+// 掃碼環境診斷：不將無來源資訊的跨來源 Script error 當成本站已確認的故障。
+// 增加可檢查的 ?diagnose=1 診斷面板，確認是否真的啟動、是否能執行三種模式。
+var pojDiagnostics = { started:false, errors:[], environment:'', lastCheck:'尚未檢查' };
+function pojRecordError(kind, error, source, lineno, colno) {
+  var message = error && error.message ? error.message : String(error || '未知錯誤');
+  var entry = {kind:kind, message:message, source:String(source || ''), line:lineno || 0, column:colno || 0};
+  pojDiagnostics.errors.push(entry);
+  if (pojDiagnostics.errors.length > 12) pojDiagnostics.errors.shift();
+  try { console.warn('POJ 診斷', entry); } catch (_) {}
+  pojUpdateDiagnostics();
 }
-// 分辨網頁自身錯誤與內建掃碼器可能注入的跨來源腳本錯誤。
-// 「Script error.」且沒有 URL/行號時，無法推斷實際出錯程式；保留診斷資訊。
-window.addEventListener('error', event => {
-  const message = String(event.message || '');
-  const source = String(event.filename || '');
-  const line = Number(event.lineno || 0);
-  const column = Number(event.colno || 0);
-  const opaque = /^Script error\.?$/i.test(message.trim()) && !source && !line && !column && !event.error;
-  if (opaque) {
-    console.warn('掃描器/內建瀏覽器回報無來源的 Script error；需在 Safari 比對。', {
-      message, source, line, column, userAgent: navigator.userAgent
-    });
-    // 此類錯誤缺乏來源資訊，不中斷閃卡，也不把它當成已確認的本站程式故障。
+function pojIsOwnScript(source) {
+  if (!source) return false;
+  try {
+    var link = document.createElement('a');
+    link.href = source;
+    return link.hostname === location.hostname && link.pathname === location.pathname;
+  } catch (_) { return false; }
+}
+function pojUpdateDiagnostics() {
+  var panel = document.getElementById('poj-diagnostic');
+  if (!panel) return;
+  var running = pojDiagnostics.started ? '已成功初始化' : '尚未完成初始化';
+  var descriptions = pojDiagnostics.errors.map(function(e, i) {
+    return (i + 1) + '. [' + e.kind + '] ' + e.message + (e.source ? ' @ ' + e.source + ':' + e.line : '');
+  });
+  panel.textContent = '網站狀態：' + running + '\n操作檢查：' + pojDiagnostics.lastCheck + '\n瀏覽器：' + navigator.userAgent + '\n錯誤紀錄：\n' + (descriptions.join('\n') || '無');
+}
+function pojCreateDiagnostics() {
+  if (location.search.indexOf('diagnose=1') === -1) return;
+  var panel = document.createElement('pre');
+  panel.id = 'poj-diagnostic';
+  panel.style.cssText = 'margin:12px auto;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;padding:12px;background:#f2f6ff;color:#1c355a;border:1px solid #7e9aca;border-radius:9px;font:12px/1.6 system-ui,sans-serif;';
+  panel.setAttribute('aria-label','網站診斷資訊');
+  document.body.appendChild(panel);
+  pojUpdateDiagnostics();
+}
+function showStartupError(error) {
+  pojRecordError('本站程式', error, location.href, 0, 0);
+  var banner = document.getElementById('poj-site-error');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.id = 'poj-site-error';
+    banner.style.cssText = 'position:relative;z-index:10;background:#fff1f0;color:#9b1c1c;padding:10px;font:14px/1.5 sans-serif;white-space:pre-wrap;border:1px solid #ffa7a0';
+    document.body.insertBefore(banner, document.body.firstChild);
+  }
+  banner.textContent = '網站程式錯誤：' + (error && error.message ? error.message : String(error));
+}
+window.addEventListener('error', function(event) {
+  var message = String(event.message || '');
+  var source = String(event.filename || '');
+  var isOpaque = /^script error\.?$/i.test(message.trim());
+  if (isOpaque || !pojIsOwnScript(source)) {
+    // 掃描 App 可能注入跨來源腳本：保留在診斷面板，不讓它覆蓋閃卡操作。
+    pojRecordError('外部或未定位的腳本', message || 'Script error.', source, event.lineno, event.colno);
     return;
   }
-  showStartupError(event.error || (message + (source ? ('\n位置：' + source + ':' + line + ':' + column) : '')));
+  showStartupError(event.error || (message + '\n' + source + ':' + (event.lineno || 0)));
 });
-window.addEventListener('unhandledrejection', event => showStartupError(event.reason));
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('unhandledrejection', function(event) {
+  var reason = event.reason;
+  var msg = String(reason && reason.message ? reason.message : reason || '');
+  if (/^script error\.?$/i.test(msg.trim())) {
+    pojRecordError('來源不明的 Promise 錯誤', msg, '', 0, 0);
+    return;
+  }
+  showStartupError(reason);
+});
+window.addEventListener('DOMContentLoaded', function() {
+  pojCreateDiagnostics();
   try {
     updateBookTabs();
     applyFilters();
     changeSpeed(3);
+    pojDiagnostics.started = true;
+    pojDiagnostics.lastCheck = '初始化函式已全部執行';
+    pojUpdateDiagnostics();
   } catch (error) {
     showStartupError(error);
   }
