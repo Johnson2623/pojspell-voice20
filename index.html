@@ -5068,7 +5068,23 @@ function showStartupError(error) {
   banner.textContent = '網站執行時發生錯誤：' + (error && error.message ? error.message : String(error));
   document.body.prepend(banner);
 }
-window.addEventListener('error', event => showStartupError(event.error || event.message));
+// 分辨網頁自身錯誤與內建掃碼器可能注入的跨來源腳本錯誤。
+// 「Script error.」且沒有 URL/行號時，無法推斷實際出錯程式；保留診斷資訊。
+window.addEventListener('error', event => {
+  const message = String(event.message || '');
+  const source = String(event.filename || '');
+  const line = Number(event.lineno || 0);
+  const column = Number(event.colno || 0);
+  const opaque = /^Script error\.?$/i.test(message.trim()) && !source && !line && !column && !event.error;
+  if (opaque) {
+    console.warn('掃描器/內建瀏覽器回報無來源的 Script error；需在 Safari 比對。', {
+      message, source, line, column, userAgent: navigator.userAgent
+    });
+    // 此類錯誤缺乏來源資訊，不中斷閃卡，也不把它當成已確認的本站程式故障。
+    return;
+  }
+  showStartupError(event.error || (message + (source ? ('\n位置：' + source + ':' + line + ':' + column) : '')));
+});
 window.addEventListener('unhandledrejection', event => showStartupError(event.reason));
 window.addEventListener('DOMContentLoaded', () => {
   try {
